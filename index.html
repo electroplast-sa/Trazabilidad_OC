@@ -464,7 +464,16 @@ tr.line-row .desc{font-size:12px;color:var(--ink-3);max-width:300px;overflow:hid
 /* ============================================================
    CONFIG
    ============================================================ */
-const CONFIG = { DATA_URL:'./oc-data.json', UPDATE_ENDPOINT:'', DATE_NUMFMT:'dd/mm/yyyy', MAX_TEXT:1000 };
+const CONFIG = {
+  DATA_URL:'./oc-data.json',
+  DATE_NUMFMT:'dd/mm/yyyy',
+  MAX_TEXT:1000,
+  // === Guardado en Excel vía Power Automate (flujo "Recibir cambios OC") ===
+  SAVE_URL:'https://default5f253bcbde0849bda612fe93aba0be.05.environment.api.powerplatform.com:443/powerautomate/automations/direct/workflows/a50ed79351af4d46a20e49f4170853d7/triggers/manual/paths/invoke?api-version=1&sp=%2Ftriggers%2Fmanual%2Frun&sv=1.0&sig=huZRrswN44keY9D2BCsnDU78MD59PUc69TvFa___Ihw',
+  SAVE_KEY:'Electro123.',       // ← clave secreta (debe coincidir con la del flujo)
+  SAVE_RETRIES:2,              // reintentos por cambio si falla
+  SAVE_RETRY_MS:1200,          // espera entre reintentos
+};
 const READY = 'lista para recolectar';
 
 /* ============================================================
@@ -1005,7 +1014,10 @@ async function guardarDrawer(){
     const payload={id_linea_oc:id, oc:row.vals.B, item_internal_id:row._internal||null, usuario:state.user, rol:state.role, timestamp:ts.toISOString(), cambios};
     state.pendingUpdates.push(payload);
     cambios.forEach(ch=>state.log.unshift({ts,user:state.user,role:state.role,id,L:ch.columna,field:ch.campo,old:ch.valor_anterior,new:fmtVal(byLetter(ch.columna),ch.valor)}));
-    if(CONFIG.UPDATE_ENDPOINT){ try{ await fetch(CONFIG.UPDATE_ENDPOINT,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)}); }catch(e){ toast('info','Guardado local; envío a BD falló (en cola).'); } }
+    let fallo=false, auth=false;
+    for(const ch of cambios){ const r=await enviarCambioBD(id, ch.columna, ch.valor); if(!r.ok && !r.skipped){ fallo=true; if(r.auth) auth=true; } }
+    if(auth) toast('err','Clave de guardado inválida: revisá CONFIG.SAVE_KEY.');
+    else if(fallo) toast('info','Guardado local; algún cambio no llegó al Excel (en cola para reintentar).');
     construirDropdowns(); state.drawerEdits={}; refreshDrawerDirty();
     construirKPIs(); aplicarFiltros(); construirFiltros(); actualizarPendCount();
     toast('ok',`Guardado: ${cambios.length} campo(s) en OC ${row.vals.B||id}`);
@@ -1085,7 +1097,7 @@ async function aplicarBulk(){
       row.vals[L]=c.dt==='date'?(val||''):val;
       const payload={id_linea_oc:row.id,oc:row.vals.B,item_internal_id:row._internal||null,usuario:state.user,rol:state.role,timestamp:ts.toISOString(),origen:'lote',cambios:[{columna:L,campo:c.f,valor:row.vals[L],valor_anterior:fmtVal(c,oldV)}]};
       state.pendingUpdates.push(payload); state.log.unshift({ts,user:state.user,role:state.role,id:row.id,L,field:c.f,old:fmtVal(c,oldV),new:fmtVal(c,row.vals[L])});
-      if(CONFIG.UPDATE_ENDPOINT){try{await fetch(CONFIG.UPDATE_ENDPOINT,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});}catch(e){}}
+      await enviarCambioBD(row.id, L, row.vals[L]);
       okCount++;
     }
     construirDropdowns();construirFiltros();construirKPIs();aplicarFiltros();actualizarPendCount();cerrarBulk();
@@ -1165,7 +1177,7 @@ async function aplicarOCTrz(){
       row.vals[L]= c.dt==='date'?(val||''):val;
       const payload={id_linea_oc:row.id,oc:row.vals.B,item_internal_id:row._internal||null,usuario:state.user,rol:state.role,timestamp:ts.toISOString(),origen:'oc_masivo',cambios:[{columna:L,campo:c.f,valor:row.vals[L],valor_anterior:fmtVal(c,oldV)}]};
       state.pendingUpdates.push(payload); state.log.unshift({ts,user:state.user,role:state.role,id:row.id,L,field:c.f,old:fmtVal(c,oldV),new:fmtVal(c,row.vals[L])});
-      if(CONFIG.UPDATE_ENDPOINT){try{await fetch(CONFIG.UPDATE_ENDPOINT,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});}catch(e){}}
+      await enviarCambioBD(row.id, L, row.vals[L]);
       okCount++;
     }
     construirDropdowns();construirFiltros();construirKPIs();aplicarFiltros();actualizarPendCount();cerrarOCTrz();
@@ -1207,6 +1219,42 @@ function renderIndicadores(){
    LOG / ACTUALIZACIONES
    ============================================================ */
 function actualizarPendCount(){const n=state.pendingUpdates.length;const el=document.getElementById('pendCount');el.textContent=n;el.classList.toggle('hidden',n===0);}
+
+/* ============================================================
+   ENVÍO A EXCEL (Power Automate) — un cambio por petición
+   - Una sola celda por POST → atómico, ideal para varios usuarios a la vez.
+   - Reintenta si falla; si agota reintentos, guarda en cola para reintentar luego.
+   ============================================================ */
+state.failedQueue = state.failedQueue || [];
+async function enviarCambioBD(id, columna, valor){
+  if(!CONFIG.SAVE_URL){ return {ok:false, skipped:true}; }  // sin endpoint configurado → no envía
+  const body={ clave:CONFIG.SAVE_KEY, id_linea_oc:String(id), columna, valor: valor==null?'':String(valor) };
+  let intento=0;
+  while(intento<=CONFIG.SAVE_RETRIES){
+    try{
+      const r=await fetch(CONFIG.SAVE_URL,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+      if(r.ok) return {ok:true};
+      if(r.status===401){ return {ok:false, auth:true}; }   // clave inválida: no reintentar
+      throw new Error('HTTP '+r.status);
+    }catch(e){
+      intento++;
+      if(intento>CONFIG.SAVE_RETRIES){
+        state.failedQueue.push({id,columna,valor,ts:new Date().toISOString()});
+        return {ok:false, error:e.message};
+      }
+      await new Promise(res=>setTimeout(res, CONFIG.SAVE_RETRY_MS));
+    }
+  }
+  return {ok:false};
+}
+async function reintentarFallidos(){
+  if(!state.failedQueue.length){ toast('info','No hay cambios pendientes de reenvío.'); return; }
+  showLoader(`Reenviando ${state.failedQueue.length} cambio(s)…`);
+  const pend=[...state.failedQueue]; state.failedQueue=[]; let ok=0,fail=0;
+  for(const c of pend){ const r=await enviarCambioBD(c.id,c.columna,c.valor); r.ok?ok++:fail++; }
+  hideLoader();
+  toast(fail?'info':'ok', `Reenvío: ${ok} guardado(s)${fail?`, ${fail} aún pendiente(s)`:''}`);
+}
 function abrirLog(){const body=document.getElementById('logBody');body.innerHTML='';if(!state.log.length)body.innerHTML='<div class="empty"><div class="ic">📭</div>Sin cambios en esta sesión.</div>';
   state.log.forEach(l=>{const d=document.createElement('div');d.className='log-row';d.innerHTML=`<div class="when">${l.ts.toLocaleString('es')} · ${esc(l.user)} · ${l.role==='compras'?'Comprador':'Logística'}</div><div class="what"><b>${esc(l.field)}</b> (${l.L}) · OC línea ${esc(l.id)}</div><div class="chg"><span class="old">${esc(l.old||'∅')}</span> → <span class="new">${esc(l.new||'∅')}</span></div>`;body.appendChild(d);});
   document.getElementById('logCount').textContent=`${state.log.length} cambios · ${state.pendingUpdates.length} en cola`;
