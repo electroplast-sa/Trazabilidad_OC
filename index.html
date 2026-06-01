@@ -207,6 +207,8 @@ tr.line-row .desc{font-size:12px;color:var(--ink-3);max-width:300px;overflow:hid
 .edit-pill:hover{border-color:var(--brand-2);background:var(--accent-soft)}
 .edit-pill .v{overflow:hidden;text-overflow:ellipsis}
 .edit-pill .v.empty{color:var(--ink-3);font-style:italic}
+.oc-trz-edit{border:1px solid var(--border);background:#fff;color:var(--brand-2);font-size:11px;font-weight:600;padding:3px 9px;border-radius:14px;display:inline-flex;align-items:center;gap:5px;margin-left:7px;white-space:nowrap;transition:.12s;vertical-align:middle}
+.oc-trz-edit:hover{border-color:var(--brand-2);background:var(--accent-soft)}
 .open-detail{border:none;background:transparent;color:var(--brand-2);font-size:16px;padding:4px 8px;border-radius:6px}
 .open-detail:hover{background:var(--accent-soft)}
 
@@ -281,6 +283,9 @@ tr.line-row .desc{font-size:12px;color:var(--ink-3);max-width:300px;overflow:hid
 #bulkOverlay{position:fixed;inset:0;background:rgba(27,34,51,.42);z-index:64;display:none;backdrop-filter:blur(2px)}
 #bulkModal{position:fixed;z-index:65;top:50%;left:50%;transform:translate(-50%,-50%) scale(.96);opacity:0;pointer-events:none;transition:.18s;background:#fff;border-radius:var(--r-lg);width:min(470px,94vw);box-shadow:var(--sh-lg);display:flex;flex-direction:column;overflow:hidden}
 #bulkModal.open{opacity:1;transform:translate(-50%,-50%) scale(1);pointer-events:auto}
+#ocTrzOverlay{position:fixed;inset:0;background:rgba(27,34,51,.42);z-index:64;display:none;backdrop-filter:blur(2px)}
+#ocTrzModal{position:fixed;z-index:65;top:50%;left:50%;transform:translate(-50%,-50%) scale(.96);opacity:0;pointer-events:none;transition:.18s;background:#fff;border-radius:var(--r-lg);width:min(470px,94vw);box-shadow:var(--sh-lg);display:flex;flex-direction:column;overflow:hidden}
+#ocTrzModal.open{opacity:1;transform:translate(-50%,-50%) scale(1);pointer-events:auto}
 .bulk-head{background:linear-gradient(135deg,var(--brand-2),var(--accent));color:#fff;padding:16px 20px;font-size:15px;font-weight:650;display:flex;align-items:center;justify-content:space-between}
 .bulk-head .close2{background:rgba(255,255,255,.18);border:none;color:#fff;width:30px;height:30px;border-radius:8px;font-size:14px}
 .bulk-body{padding:18px 20px}
@@ -433,6 +438,18 @@ tr.line-row .desc{font-size:12px;color:var(--ink-3);max-width:300px;overflow:hid
   <div class="bulk-foot"><span id="bulkPreview" class="bulk-prev"></span><button class="btn-cancel" onclick="cerrarBulk()">Cancelar</button><button class="btn-save" id="bulkApply" onclick="aplicarBulk()">Aplicar</button></div>
 </div>
 
+<!-- ===================== MODAL TRAZABILIDAD POR OC ===================== -->
+<div id="ocTrzOverlay" onclick="cerrarOCTrz()"></div>
+<div id="ocTrzModal">
+  <div class="bulk-head"><span>✎ Trazabilidad de toda la OC</span><button class="close2" onclick="cerrarOCTrz()">✕</button></div>
+  <div class="bulk-body">
+    <p class="bulk-info">Vas a cambiar la <b>Trazabilidad</b> de <b>todas</b> las líneas de la <b id="ocTrzOC"></b> a la vez (<b id="ocTrzCount">0</b> líneas). Esto no impide editar cada línea por separado después.</p>
+    <div class="bulk-field"><label>Nueva trazabilidad para toda la OC</label><select id="ocTrzVal"></select></div>
+    <label class="bulk-skip"><input type="checkbox" id="ocTrzSkip"> Solo aplicar a líneas con trazabilidad vacía</label>
+  </div>
+  <div class="bulk-foot"><span id="ocTrzPrev" class="bulk-prev"></span><button class="btn-cancel" onclick="cerrarOCTrz()">Cancelar</button><button class="btn-save" id="ocTrzApply" onclick="aplicarOCTrz()">Aplicar a la OC</button></div>
+</div>
+
 <div id="celebrate"><div id="confetti"></div><div class="celebrate-msg" id="celebrateMsg">🎉 ¡Completada! 🎉</div></div>
 <div id="loader"><div class="spin"></div><div class="loader-txt" id="loaderText">Cargando…</div></div>
 <div id="toasts"></div>
@@ -551,8 +568,8 @@ async function cargarDatos(){
   showLoader('Cargando datos…');
   try{
     let arr=null, src='';
-    try{ const u=CONFIG.DATA_URL+(CONFIG.DATA_URL.includes('?')?'&':'?')+'t='+Date.now(); const r=await fetch(u,{cache:'no-store'}); if(r.ok){arr=await r.json();src='JSON (Power Automate)';} }catch(e){}
-    if(!arr){ arr=JSON.parse(document.getElementById('sampleData').textContent); src='Muestra de ejemplo'; }
+    try{ const r=await fetch(CONFIG.DATA_URL,{cache:'no-store'}); if(r.ok){arr=await r.json();src='Archivo JSON';} }catch(e){}
+    if(!arr){ arr=JSON.parse(document.getElementById('sampleData').textContent); src='Muestra incluida'; }
     cargarDesdeArray(arr); state.source=src; state.loaded=true;
     construirDropdowns();
     document.getElementById('menuFoot').textContent = `${state.rows.length.toLocaleString('es')} líneas · ${state.groups.length} OC · origen: ${src}`;
@@ -840,13 +857,13 @@ function filaGrupo(g,z,expanded){
     if(L==='B'){ html=`<span class="oc-num">OC ${esc(g.oc)}</span> <span class="line-count">${g.lines.length}${g._full&&g._full!==g.lines.length?'/'+g._full:''} líneas</span>${ready&&state.role==='logistica'?' <span class="alarm-dot" title="Lista para recolectar">🔔</span>':''}`; }
     else if(L==='C'){ html=`<span class="muted">${esc(fmtDate(g.fecha))||'—'}</span>`; }
     else if(L==='K'){ html=`<span class="prov-name">${esc(g.proveedor)||'—'}</span>`; }
-    else if(L==='L'){ const t=g.trz; html=`<span class="badge ${t.cls}"><span class="dot"></span>${esc(t.label)}</span>`; }
+    else if(L==='L'){ const t=g.trz; const puede=byLetter('L').type==='manual'&&(state.editAll||byLetter('L').section===state.role); html=`<span class="badge ${t.cls}"><span class="dot"></span>${esc(t.label)}</span>${puede?`<button class="oc-trz-edit" onclick="event.stopPropagation();abrirOCTrz('${esc(g.oc).replace(/'/g,"\\'")}')" title="Cambiar la trazabilidad de TODAS las líneas de esta OC">✎ Todas</button>`:''}`; }
     else if(L==='F'){ const s=g.estado; html=`<span class="badge ${s.cls}"><span class="dot"></span>${esc(s.label)}</span>`; }
     else if(L==='J'){ html=`<span class="muted">${esc(uniqSummary(g.lines,'J'))}</span>`; }
     else if(L==='H'){ html=`<span class="muted">${esc(uniqSummary(g.lines,'H'))}</span>`; }
     else if(L==='I'){ html=`<span class="muted">${esc(uniqSummary(g.lines,'I'))||'—'}</span>`; }
     else if(L==='D'){ html=`<span class="muted">${g.lines.length>1?'varios':esc(g.lines[0].vals.D)}</span>`; }
-    else if(L==='E'){ html=`<span class="muted">${esc(g.comprador)||''}</span>`; } // en fila-grupo, E muestra comprador (jerarquía)
+    else if(L==='E'){ html=`<span class="muted">${g.lines.length>1?'varios':esc(g.lines[0].vals.E)||'—'}</span>`; }
     const td=document.createElement('td'); if(frz!=null){td.className='frz frz-'+frz; td.style.background=z.bg;} td.innerHTML=`<div class="cell">${html}</div>`; tr.appendChild(td);
   });
   const ta=document.createElement('td'); ta.innerHTML=`<div class="cell"></div>`; tr.appendChild(ta);
@@ -1064,8 +1081,58 @@ async function aplicarBulk(){
 }
 
 /* ============================================================
-   INDICADORES
+   CAMBIO MASIVO DE TRAZABILIDAD POR OC (todas las líneas de una OC)
    ============================================================ */
+let ocTrzCurrent=null;
+function abrirOCTrz(oc){
+  const c=byLetter('L');
+  if(!(c.type==='manual'&&(state.editAll||c.section===state.role))){ toast('info','Tu rol no puede editar Trazabilidad.'); return; }
+  const grupo=state.groups.find(g=>String(g.oc)===String(oc));
+  if(!grupo){ toast('err','No se encontró la OC '+oc); return; }
+  ocTrzCurrent=oc;
+  document.getElementById('ocTrzOC').textContent='OC '+oc;
+  document.getElementById('ocTrzCount').textContent=grupo.lines.length;
+  const opts=state.dropdownOpts['L']||[];
+  document.getElementById('ocTrzVal').innerHTML='<option value="">(vacío)</option>'+opts.map(o=>`<option>${esc(o)}</option>`).join('');
+  document.getElementById('ocTrzSkip').checked=false;
+  document.getElementById('ocTrzVal').onchange=ocTrzPrev; document.getElementById('ocTrzVal').oninput=ocTrzPrev;
+  document.getElementById('ocTrzSkip').onchange=ocTrzPrev;
+  ocTrzPrev();
+  document.getElementById('ocTrzOverlay').style.display='block';
+  document.getElementById('ocTrzModal').classList.add('open');
+}
+function cerrarOCTrz(){ document.getElementById('ocTrzModal').classList.remove('open'); document.getElementById('ocTrzOverlay').style.display='none'; ocTrzCurrent=null; }
+function ocTrzLineas(){ const g=state.groups.find(x=>String(x.oc)===String(ocTrzCurrent)); return g?g.lines:[]; }
+function ocTrzPrev(){
+  const val=document.getElementById('ocTrzVal').value; const skip=document.getElementById('ocTrzSkip').checked;
+  const n=ocTrzLineas().filter(r=>{ if(skip && String(r.vals.L??'').trim()!=='') return false; return true; }).length;
+  document.getElementById('ocTrzPrev').textContent=`Afectará ${n} de ${ocTrzLineas().length} líneas`;
+  document.getElementById('ocTrzApply').disabled = n===0;
+}
+async function aplicarOCTrz(){
+  const oc=ocTrzCurrent; const c=byLetter('L');
+  const val=document.getElementById('ocTrzVal').value; const skip=document.getElementById('ocTrzSkip').checked;
+  const targets=ocTrzLineas().filter(r=>{ if(!skip)return true; return String(r.vals.L??'').trim()===''; });
+  if(!targets.length){ toast('info','No hay líneas para actualizar.'); return; }
+  if(!confirm(`Se cambiará la Trazabilidad de ${targets.length} línea(s) de la OC ${oc} a "${val||'(vacío)'}". ¿Continuar?`)) return;
+  const apply=document.getElementById('ocTrzApply'); apply.disabled=true; apply.textContent='Aplicando…'; showLoader(`Actualizando OC ${oc}…`);
+  let okCount=0, celebrar=false; const ts=new Date();
+  try{
+    for(const row of targets){ const oldV=row.vals.L; if(String(oldV??'')===String(val??''))continue;
+      if(state.mode==='office'){ await escribirCelda(row.id,c,val); }
+      if(esCompletada(val)&&!esCompletada(oldV)) celebrar=true;
+      row.vals.L=val;
+      const payload={id_linea_oc:row.id,oc:row.vals.B,item_internal_id:row._internal||null,usuario:state.user,rol:state.role,timestamp:ts.toISOString(),origen:'oc_masivo',cambios:[{columna:'L',campo:c.f,valor:val,valor_anterior:fmtVal(c,oldV)}]};
+      state.pendingUpdates.push(payload); state.log.unshift({ts,user:state.user,role:state.role,id:row.id,L:'L',field:c.f,old:fmtVal(c,oldV),new:fmtVal(c,val)});
+      if(CONFIG.UPDATE_ENDPOINT){try{await fetch(CONFIG.UPDATE_ENDPOINT,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});}catch(e){}}
+      okCount++;
+    }
+    construirDropdowns();construirFiltros();construirKPIs();aplicarFiltros();actualizarPendCount();cerrarOCTrz();
+    toast('ok',`Trazabilidad actualizada en ${okCount} línea(s) de la OC ${oc}`);
+    if(celebrar)celebrar1(`🎉 ¡OC ${oc} completada! 🎉`);
+  }catch(err){console.error(err);toast('err','Error: '+(err.message||err));}
+  finally{hideLoader();apply.disabled=false;apply.textContent='Aplicar a la OC';}
+}
 async function abrirIndicadores(){
   if(!state.loaded) await cargarDatos();
   document.getElementById('menuScreen').classList.add('hidden');
