@@ -331,6 +331,22 @@ tr.line-row .desc{font-size:12px;color:var(--ink-3);max-width:300px;overflow:hid
 .spin{width:40px;height:40px;border:4px solid var(--accent-soft);border-top-color:var(--brand-2);border-radius:50%;animation:sp 1s linear infinite}
 @keyframes sp{to{transform:rotate(360deg)}}
 .loader-txt{font-size:13px;color:var(--ink-2);font-weight:600}
+/* === Chip de sincronización en segundo plano === */
+.sync-chip{display:inline-flex;align-items:center;gap:7px;background:var(--amber-bg);color:var(--amber);border:1px solid #EAD7A8;border-radius:20px;padding:5px 12px;font-size:12px;font-weight:600}
+.sync-spin{width:12px;height:12px;border:2px solid #E3C77A;border-top-color:var(--amber);border-radius:50%;animation:syncspin .8s linear infinite}
+@keyframes syncspin{to{transform:rotate(360deg)}}
+/* === Filtro por rango de fecha === */
+.date-range{display:flex;flex-direction:column;gap:8px}
+.date-range label{display:flex;align-items:center;justify-content:space-between;gap:8px;font-size:12.5px;color:var(--ink-2);font-weight:600}
+.date-range input[type=date]{border:1px solid var(--line);border-radius:var(--r-sm);padding:7px 9px;font-size:12.5px;background:var(--surface-2);color:var(--ink)}
+.date-range input[type=date]:focus{outline:none;border-color:var(--brand-2);background:#fff;box-shadow:0 0 0 3px var(--accent-soft)}
+.date-range .dr-clear{align-self:flex-end;border:none;background:none;color:var(--accent);font-size:11.5px;font-weight:600;cursor:pointer;padding:2px}
+/* === Ir a página específica === */
+.pager .goto{display:inline-flex;align-items:center;gap:6px;font-size:12.5px;color:var(--ink-2)}
+.pager .goto input{width:62px;border:1px solid var(--line);border-radius:var(--r-sm);padding:6px 8px;font-size:12.5px;text-align:center}
+.pager .goto input:focus{outline:none;border-color:var(--brand-2);box-shadow:0 0 0 3px var(--accent-soft)}
+.pager .goto button{border:1px solid var(--brand-2);background:var(--brand-2);color:#fff;border-radius:var(--r-sm);padding:6px 11px;font-size:12.5px;font-weight:600;cursor:pointer}
+.pager .goto button:hover{background:var(--brand)}
 </style>
 </head>
 <body>
@@ -359,6 +375,7 @@ tr.line-row .desc{font-size:12px;color:var(--ink-3);max-width:300px;overflow:hid
     <div class="spacer"></div>
     <button class="tbtn" id="btnToggleRol" onclick="toggleRol()">⇄</button>
     <button class="tbtn" id="btnLog" onclick="abrirLog()">📤 Actualizaciones <span class="pcount hidden" id="pendCount">0</span></button>
+    <span class="sync-chip hidden" id="syncChip"><span class="sync-spin"></span><span id="syncTxt">Sincronizando…</span></span>
     <button class="tbtn" onclick="recargar()">↻</button>
     <button class="tbtn" onclick="volverMenu()">☰ Menú</button>
   </div>
@@ -400,6 +417,7 @@ tr.line-row .desc{font-size:12px;color:var(--ink-3);max-width:300px;overflow:hid
         <span>Página <b id="pgNum">1</b> / <b id="pgTotal">1</b></span>
         <button id="pgNext" onclick="irPagina(state.page+1)">›</button>
         <button id="pgLast" onclick="irPagina(state.totalPages)">»</button>
+        <span class="goto">Ir a <input type="number" id="pgGoto" min="1" placeholder="#" onkeydown="if(event.key==='Enter')irPaginaInput()"><button onclick="irPaginaInput()">Ir</button></span>
         <div class="spacer" style="flex:1"></div>
         <span>OC por página:</span>
         <select id="pageSize" onchange="state.pageSize=+this.value;state.page=1;renderTabla()"><option>25</option><option selected>50</option><option>100</option><option>200</option></select>
@@ -566,6 +584,10 @@ const state={
   expanded:new Set(), editAll:false, onlyReady:false, kpiFilter:null,
   page:1, pageSize:50, totalPages:1, dropdownOpts:{}, log:[], pendingUpdates:[],
   drawerId:null, drawerEdits:{},
+  // cola de envío en segundo plano (no bloquea al usuario)
+  sendQueue:[], sending:false, sendDone:0, sendTotal:0, _authErr:false,
+  // filtro por rango de fecha (Fecha OC, columna C)
+  dateFrom:'', dateTo:'',
 };
 
 /* ============================================================
@@ -758,7 +780,17 @@ function construirFiltros(){
     });
     panel.appendChild(col);
   });
-  // botón limpiar
+  // grupo de rango de fecha (Fecha OC)
+  const dcol=document.createElement('div'); dcol.className='fgroup';
+  dcol.innerHTML='<div class="fgroup-title">Rango de fecha (Fecha OC)</div>';
+  const dr=document.createElement('div'); dr.className='date-range';
+  dr.innerHTML='<label>Desde <input type="date" id="fDateFrom"></label><label>Hasta <input type="date" id="fDateTo"></label><button type="button" class="dr-clear" id="fDateClear">Limpiar rango</button>';
+  dcol.appendChild(dr); panel.appendChild(dcol);
+  const inF=dr.querySelector('#fDateFrom'), inT=dr.querySelector('#fDateTo');
+  inF.value=state.dateFrom||''; inT.value=state.dateTo||'';
+  inF.onchange=()=>{ state.dateFrom=inF.value; actualizarFiltCount(); aplicarFiltros(); };
+  inT.onchange=()=>{ state.dateTo=inT.value; actualizarFiltCount(); aplicarFiltros(); };
+  dr.querySelector('#fDateClear').onclick=()=>{ state.dateFrom=''; state.dateTo=''; inF.value=''; inT.value=''; actualizarFiltCount(); aplicarFiltros(); };
   const clearWrap=document.createElement('div'); clearWrap.style.gridColumn='1/-1'; clearWrap.style.display='flex'; clearWrap.style.justifyContent='flex-end'; clearWrap.style.marginTop='4px';
   const cb=document.createElement('button'); cb.className='chip-toggle clear-btn'; cb.innerHTML='🧹 Limpiar filtros'; cb.onclick=limpiarFiltros;
   clearWrap.appendChild(cb); panel.appendChild(clearWrap);
@@ -784,10 +816,12 @@ function makeMultiSelect(def,values){
 document.addEventListener('click',()=>document.querySelectorAll('.ms-pop').forEach(p=>p.classList.add('hidden')));
 function actualizarFiltCount(){
   let n=0; ALL_FILTERS.forEach(def=>{ if(state.filters[def.L]) n+=state.filters[def.L].size; });
+  if(state.dateFrom||state.dateTo) n++;
   const el=document.getElementById('filtCount'); el.textContent=n; el.classList.toggle('hidden',n===0);
 }
 function limpiarFiltros(){
   ALL_FILTERS.forEach(def=>{ if(state.filters[def.L]) state.filters[def.L].clear(); });
+  state.dateFrom=''; state.dateTo='';
   state.kpiFilter=null; state.onlyReady=false; document.getElementById('search').value='';
   construirFiltros(); construirKPIs(); aplicarFiltros();
   toast('info','Filtros limpiados');
@@ -798,19 +832,21 @@ function limpiarFiltros(){
    ============================================================ */
 function lineaPasa(r){
   for(const def of ALL_FILTERS){ const sel=state.filters[def.L]; if(sel&&sel.size){ const raw=r.vals[def.L]; const v=(raw==null||String(raw).trim()==='')?'(vacío)':String(raw).trim(); if(!sel.has(v)) return false; } }
+  // rango de fecha por Fecha OC (columna C)
+  if(state.dateFrom||state.dateTo){ const iso=fmtDate(r.vals.C); if(!iso) return false; if(state.dateFrom && iso<state.dateFrom) return false; if(state.dateTo && iso>state.dateTo) return false; }
   if(state.onlyReady && String(r.vals.L||'').trim().toLowerCase()!==READY) return false;
   if(!kpiMatch(r)) return false;
   const q=state.search; if(q){ const hay=[r.vals.B,r.vals.D,r.vals.E,r.vals.K].some(x=>String(x??'').toLowerCase().includes(q)); if(!hay) return false; }
   return true;
 }
-function aplicarFiltros(){
+function aplicarFiltros(resetPage=true){
   state.search=document.getElementById('search').value.trim().toLowerCase();
   state.filteredGroups=[];
   state.groups.forEach(g=>{
     const lines=g.lines.filter(lineaPasa);
     if(lines.length) state.filteredGroups.push({...g, lines, _full:g.lines.length});
   });
-  state.page=1; renderTabla(); actualizarReadyMeta();
+  if(resetPage) state.page=1; renderTabla(); actualizarReadyMeta();
 }
 function actualizarReadyMeta(){
   const total=state.rows.filter(r=>String(r.vals.L||'').trim().toLowerCase()===READY).length;
@@ -929,6 +965,7 @@ function editPill(line,c){
 function toggleOC(oc){ if(state.expanded.has(oc))state.expanded.delete(oc); else state.expanded.add(oc); renderTabla(); }
 function expandirTodo(on){ if(on){ state.filteredGroups.forEach(g=>state.expanded.add(g.oc)); } else { state.expanded.clear(); } renderTabla(); }
 function irPagina(p){ if(p<1||p>state.totalPages)return; state.page=p; renderTabla(); }
+function irPaginaInput(){ const el=document.getElementById('pgGoto'); if(!el)return; let p=parseInt(el.value,10); if(isNaN(p)){ el.value=''; return; } p=Math.max(1,Math.min(state.totalPages,p)); el.value=''; irPagina(p); }
 
 /* columnas congeladas: calcular offsets dinámicos (expand + OC + Fecha + Proveedor) */
 function ajustarFrozen(){
@@ -1002,29 +1039,26 @@ async function guardarDrawer(){
   const id=state.drawerId, edits={...state.drawerEdits}, cols=Object.keys(edits); if(!cols.length)return;
   for(const L of cols){const v=validar(byLetter(L),edits[L]);if(!v.ok){toast('err',`${byLetter(L).f}: ${v.msg}`);return;}}
   for(const L of cols){if(byLetter(L).type!=='manual'){toast('err',`Bloqueado: ${L} es columna de fórmula.`);return;}}
-  const btn=document.getElementById('drawerSave');btn.disabled=true;btn.textContent='Guardando…';showLoader('Guardando…');
+  const btn=document.getElementById('drawerSave');btn.disabled=true;btn.textContent='Guardando…';
   try{
     const row=state.rows.find(r=>r.id===id); const cambios=[]; let celebrar=false;
     for(const L of cols){const c=byLetter(L);const oldV=row.vals[L];const newRaw=edits[L];
-      if(state.mode==='office'){ await escribirCelda(id,c,newRaw); }
       if(L==='L' && esCompletada(newRaw) && !esCompletada(oldV)) celebrar=true;
       row.vals[L]= c.dt==='date'?(newRaw||''):newRaw;
-      cambios.push({columna:L,campo:c.f,valor:row.vals[L],valor_anterior:fmtVal(c,oldV)});}
+      cambios.push({columna:L,campo:c.f,valor:row.vals[L],valor_anterior:fmtVal(c,oldV)});
+      encolarEnvio(id, c, newRaw, row.vals[L]);   // envío a Excel/BD en segundo plano
+    }
     const ts=new Date();
     const payload={id_linea_oc:id, oc:row.vals.B, item_internal_id:row._internal||null, usuario:state.user, rol:state.role, timestamp:ts.toISOString(), cambios};
     state.pendingUpdates.push(payload);
     cambios.forEach(ch=>state.log.unshift({ts,user:state.user,role:state.role,id,L:ch.columna,field:ch.campo,old:ch.valor_anterior,new:fmtVal(byLetter(ch.columna),ch.valor)}));
-    let fallo=false, auth=false;
-    for(const ch of cambios){ const r=await enviarCambioBD(id, ch.columna, ch.valor); if(!r.ok && !r.skipped){ fallo=true; if(r.auth) auth=true; } }
-    if(auth) toast('err','Clave de guardado inválida: revisá CONFIG.SAVE_KEY.');
-    else if(fallo) toast('info','Guardado local; algún cambio no llegó al Excel (en cola para reintentar).');
     construirDropdowns(); state.drawerEdits={}; refreshDrawerDirty();
-    construirKPIs(); aplicarFiltros(); construirFiltros(); actualizarPendCount();
+    construirKPIs(); aplicarFiltros(false); construirFiltros(); actualizarPendCount();
     toast('ok',`Guardado: ${cambios.length} campo(s) en OC ${row.vals.B||id}`);
     if(celebrar) celebrar1();
     if(state.drawerId===id) abrirDrawer(id);
   }catch(err){console.error(err);toast('err','No se pudo guardar: '+(err.message||err));}
-  finally{hideLoader();btn.disabled=false;btn.textContent='Guardar cambios';}
+  finally{btn.disabled=false;btn.textContent='Guardar cambios';}
 }
 async function escribirCelda(id,col,rawVal){
   await Excel.run(async ctx=>{
@@ -1088,23 +1122,22 @@ async function aplicarBulk(){
   const targets=filtradasLineas().filter(r=>{ if(!skip)return true; return String(r.vals[L]??'').trim()===''; });
   if(!targets.length){toast('info','No hay líneas para actualizar.');return;}
   if(!confirm(`Se asignará "${val||'(vacío)'}" a ${targets.length} línea(s) en ${c.f}. ¿Continuar?`))return;
-  const apply=document.getElementById('bulkApply');apply.disabled=true;apply.textContent='Aplicando…';showLoader(`Aplicando a ${targets.length} líneas…`);
+  const apply=document.getElementById('bulkApply');apply.disabled=true;apply.textContent='Aplicando…';
   let okCount=0,celebrar=false;const ts=new Date();
   try{
     for(const row of targets){const oldV=row.vals[L]; if(String(oldV??'')===String(val??''))continue;
-      if(state.mode==='office'){await escribirCelda(row.id,c,val);}
       if(L==='L'&&esCompletada(val)&&!esCompletada(oldV))celebrar=true;
       row.vals[L]=c.dt==='date'?(val||''):val;
       const payload={id_linea_oc:row.id,oc:row.vals.B,item_internal_id:row._internal||null,usuario:state.user,rol:state.role,timestamp:ts.toISOString(),origen:'lote',cambios:[{columna:L,campo:c.f,valor:row.vals[L],valor_anterior:fmtVal(c,oldV)}]};
       state.pendingUpdates.push(payload); state.log.unshift({ts,user:state.user,role:state.role,id:row.id,L,field:c.f,old:fmtVal(c,oldV),new:fmtVal(c,row.vals[L])});
-      await enviarCambioBD(row.id, L, row.vals[L]);
+      encolarEnvio(row.id, c, val, row.vals[L]);   // envío en segundo plano
       okCount++;
     }
-    construirDropdowns();construirFiltros();construirKPIs();aplicarFiltros();actualizarPendCount();cerrarBulk();
-    toast('ok',`Valor aplicado a ${okCount} línea(s) en ${c.f}`);
+    construirDropdowns();construirFiltros();construirKPIs();aplicarFiltros(false);actualizarPendCount();cerrarBulk();
+    toast('ok',`Valor aplicado a ${okCount} línea(s) en ${c.f} · sincronizando…`);
     if(celebrar)celebrar1(`🎉 ¡${okCount} completadas! 🎉`);
   }catch(err){console.error(err);toast('err','Error en lote: '+(err.message||err));}
-  finally{hideLoader();apply.disabled=false;apply.textContent='Aplicar';}
+  finally{apply.disabled=false;apply.textContent='Aplicar';}
 }
 
 /* ============================================================
@@ -1168,24 +1201,23 @@ async function aplicarOCTrz(){
     return;
   }
   apply.dataset.armed='0'; clearTimeout(aplicarOCTrz._t); apply.classList.remove('confirm-arm');
-  apply.disabled=true; apply.textContent='Aplicando…'; showLoader(`Actualizando OC ${oc}…`);
+  apply.disabled=true; apply.textContent='Aplicando…';
   let okCount=0, celebrar=false; const ts=new Date();
   try{
     for(const row of targets){ const oldV=row.vals[L]; if(String(oldV??'')===String(val??''))continue;
-      if(state.mode==='office'){ await escribirCelda(row.id,c,val); }
       if(L==='L' && esCompletada(val)&&!esCompletada(oldV)) celebrar=true;
       row.vals[L]= c.dt==='date'?(val||''):val;
       const payload={id_linea_oc:row.id,oc:row.vals.B,item_internal_id:row._internal||null,usuario:state.user,rol:state.role,timestamp:ts.toISOString(),origen:'oc_masivo',cambios:[{columna:L,campo:c.f,valor:row.vals[L],valor_anterior:fmtVal(c,oldV)}]};
       state.pendingUpdates.push(payload); state.log.unshift({ts,user:state.user,role:state.role,id:row.id,L,field:c.f,old:fmtVal(c,oldV),new:fmtVal(c,row.vals[L])});
-      await enviarCambioBD(row.id, L, row.vals[L]);
+      encolarEnvio(row.id, c, val, row.vals[L]);   // envío en segundo plano
       okCount++;
     }
-    construirDropdowns();construirFiltros();construirKPIs();aplicarFiltros();actualizarPendCount();cerrarOCTrz();
-    if(okCount>0){ toast('ok',`${c.f} actualizado en ${okCount} línea(s) de la OC ${oc}`); }
+    construirDropdowns();construirFiltros();construirKPIs();aplicarFiltros(false);actualizarPendCount();cerrarOCTrz();
+    if(okCount>0){ toast('ok',`${c.f} actualizado en ${okCount} línea(s) de la OC ${oc} · sincronizando…`); }
     else { toast('info','Las líneas ya tenían ese valor; no hubo cambios.'); }
     if(celebrar)celebrar1(`🎉 ¡OC ${oc} completada! 🎉`);
   }catch(err){console.error(err);toast('err','Error: '+(err.message||err));}
-  finally{hideLoader();apply.disabled=false;apply.textContent='Aplicar a la OC';}
+  finally{apply.disabled=false;apply.textContent='Aplicar a la OC';}
 }
 async function abrirIndicadores(){
   if(!state.loaded) await cargarDatos();
@@ -1246,6 +1278,50 @@ async function enviarCambioBD(id, columna, valor){
     }
   }
   return {ok:false};
+}
+/* ============================================================
+   COLA DE ENVÍO EN SEGUNDO PLANO
+   - Aplica el cambio localmente al instante (no atrasa al usuario).
+   - El envío a Excel/Power Automate ocurre por debajo, en cola.
+   - Muestra un chip discreto de progreso en la barra superior.
+   ============================================================ */
+function encolarEnvio(id, col, rawVal, valor){
+  state.sendQueue.push({ id, col, rawVal, valor:(valor==null?'':String(valor)) });
+  state.sendTotal++;
+  actualizarSendBadge();
+  procesarCola();
+}
+async function procesarCola(){
+  if(state.sending) return;
+  state.sending=true; actualizarSendBadge();
+  while(state.sendQueue.length){
+    const it=state.sendQueue.shift();
+    try{
+      if(state.mode==='office'){ await escribirCelda(it.id, it.col, it.rawVal); }
+      const r=await enviarCambioBD(it.id, it.col.L, it.valor);
+      if(r && r.auth) state._authErr=true;
+    }catch(e){
+      state.failedQueue.push({ id:it.id, columna:it.col.L, valor:it.valor, ts:new Date().toISOString() });
+    }
+    state.sendDone++; actualizarSendBadge();
+  }
+  state.sending=false;
+  const hadAuth=state._authErr, hadFails=state.failedQueue.length>0, total=state.sendTotal;
+  state.sendTotal=0; state.sendDone=0; state._authErr=false;
+  actualizarSendBadge(); actualizarPendCount();
+  if(total>0){
+    if(hadAuth) toast('err','Clave de guardado inválida: revisá CONFIG.SAVE_KEY.');
+    else if(hadFails) toast('info','Algunos cambios no llegaron al Excel (en cola para reintentar).');
+    else toast('ok','Cambios sincronizados con la base de datos.');
+  }
+}
+function actualizarSendBadge(){
+  const chip=document.getElementById('syncChip'); if(!chip) return;
+  if(state.sending || state.sendQueue.length){
+    chip.classList.remove('hidden');
+    const txt=document.getElementById('syncTxt');
+    if(txt) txt.textContent=`Sincronizando ${state.sendDone}/${state.sendTotal}`;
+  }else{ chip.classList.add('hidden'); }
 }
 async function reintentarFallidos(){
   if(!state.failedQueue.length){ toast('info','No hay cambios pendientes de reenvío.'); return; }
